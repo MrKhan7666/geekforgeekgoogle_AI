@@ -53,13 +53,13 @@
                 </h2>
                 
                 <label class="border-2 border-dashed border-slate-700 hover:border-emerald-500/50 rounded-xl p-6 flex flex-col items-center justify-center gap-3 cursor-pointer transition-all bg-slate-900/40 group">
-                    <input type="file" id="filePicker" class="hidden" accept=".txt,.json,.md" onchange="handleFileUpload(event)">
+                    <input type="file" id="filePicker" class="hidden" accept=".txt,.json,.md,.pdf" onchange="handleFileUpload(event)">
                     <div class="p-3 bg-slate-800 rounded-full group-hover:scale-110 transition-transform">
                         <i data-lucide="upload-cloud" class="w-6 h-6 text-slate-400 group-hover:text-emerald-400"></i>
                     </div>
                     <div class="text-center">
                         <p class="text-sm font-medium text-slate-200">Click or drag report to upload</p>
-                        <p class="text-xs text-slate-500 mt-1">Accepts raw TXT medical logs/notes</p>
+                        <p class="text-xs text-slate-500 mt-1">Accepts TXT, MD, JSON, and PDF reports</p>
                     </div>
                 </label>
             </div>
@@ -67,7 +67,7 @@
             <div class="bg-darkCard border border-slate-800 rounded-2xl p-5 flex-1 overflow-y-auto flex flex-col gap-3">
                 <h3 class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Loaded Documents</h3>
                 <div id="documentList" class="flex flex-col gap-2">
-                    <p class="text-xs text-slate-500 italic">No documents uploaded yet. Upload a test report below to simulate.</p>
+                    <p class="text-xs text-slate-500 italic">No documents uploaded yet. Upload a report to begin analysis.</p>
                 </div>
                 
                 <div class="mt-auto pt-4 border-t border-slate-800 flex flex-col gap-2 shrink-0">
@@ -88,7 +88,7 @@
                     <div id="chatStatusDot" class="w-2.5 h-2.5 rounded-full bg-slate-500"></div>
                     <h2 class="font-semibold text-slate-200" id="chatEngineTitle">Agentic AI Copilot Chat</h2>
                 </div>
-                <span class="text-xs bg-slate-800 px-2.5 py-1 rounded-md text-slate-400 border border-slate-700">Gemini Live RAG</span>
+                <span class="text-xs bg-slate-800 px-2.5 py-1 rounded-md text-slate-400 border border-slate-700">Gemini Live Multimodal RAG</span>
             </div>
 
             <div id="agentOutput" class="flex-1 overflow-y-auto p-6 space-y-4 text-sm leading-relaxed text-slate-300">
@@ -144,7 +144,6 @@
                 isConnected = true;
                 
                 try {
-                    // Initialize the stable browser Web SDK
                     const genAI = new GoogleGenerativeAI(apiKey);
                     aiModelInstance = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
@@ -155,7 +154,7 @@
                     
                     enableChatInterface();
                     clearChatCanvas();
-                    appendSystemMessage("System Active: Gemini API Handshake Complete. Ready to process records.");
+                    appendSystemMessage("System Active: Multimodal Handshake Complete. Ready to process records & PDF contexts.");
                 } catch (err) {
                     console.error("Initialization error:", err);
                     alert("Error initializing Gemini client: " + err.message);
@@ -198,7 +197,7 @@
 
         function injectMock(key) {
             const data = mockData[key];
-            addDocument(data.name, data.type, data.content);
+            addDocument(data.name, data.type, data.content, false, "text/plain");
         }
 
         function handleFileUpload(event) {
@@ -206,22 +205,40 @@
             if (!file) return;
             
             const reader = new FileReader();
+            const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith('.pdf');
+            
             reader.onload = function(e) {
                 let type = "Medical Report";
                 if(file.name.toLowerCase().includes('rx') || file.name.toLowerCase().includes('presc')) type = "Prescription";
                 if(file.name.toLowerCase().includes('receipt') || file.name.toLowerCase().includes('bill')) type = "Receipt";
+                if(isPdf) type = "PDF Report";
                 
-                addDocument(file.name, type, e.target.result);
+                if (isPdf) {
+                    // Extract clean raw base64 string excluding data URL headers
+                    const base64Data = e.target.result.split(',')[1];
+                    addDocument(file.name, type, base64Data, true, "application/pdf");
+                } else {
+                    addDocument(file.name, type, e.target.result, false, "text/plain");
+                }
             };
-            reader.readAsText(file);
+
+            if (isPdf) {
+                reader.readAsDataURL(file); // Reads file to base64 encoding stream
+            } else {
+                reader.readAsText(file);
+            }
         }
 
-        function addDocument(name, type, content) {
+        function addDocument(name, type, content, isBinary = false, mimeType = "text/plain") {
             const id = 'doc_' + Date.now();
-            uploadedDocs[id] = { name, type, content };
+            uploadedDocs[id] = { name, type, content, isBinary, mimeType };
             
             const container = document.getElementById('documentList');
             if (container.querySelector('p')) container.innerHTML = '';
+
+            let iconName = 'file-text';
+            if (type === 'Prescription') iconName = 'pill';
+            if (isBinary && mimeType === 'application/pdf') iconName = 'file-text-dashed';
 
             const docElement = document.createElement('button');
             docElement.className = "w-full text-left bg-slate-900/50 hover:bg-slate-800/80 p-3 rounded-xl border border-slate-800 flex items-center justify-between transition-all group border-l-4 border-l-slate-700";
@@ -229,7 +246,7 @@
             docElement.onclick = () => runAgentEngine(id);
             docElement.innerHTML = `
                 <div class="flex items-center gap-3">
-                    <i data-lucide="${type === 'Prescription' ? 'pill' : 'file-text'}" class="w-4 h-4 text-emerald-400"></i>
+                    <i data-lucide="${iconName}" class="w-4 h-4 text-emerald-400"></i>
                     <div class="truncate max-w-[180px]">
                         <p class="text-xs font-medium text-slate-200 truncate">${name}</p>
                         <p class="text-[10px] text-slate-500">${type}</p>
@@ -278,82 +295,5 @@
             const loadingBubbleId = appendChatBubble("", 'agent', true);
 
             try {
-                let contextContent = "No documents currently attached.";
-                let contextName = "None";
-                if(selectedDocId && uploadedDocs[selectedDocId]) {
-                    contextContent = uploadedDocs[selectedDocId].content;
-                    contextName = uploadedDocs[selectedDocId].name;
-                }
-
-                const systemInstructions = `
-                    You are an Agentic Healthcare Notebook AI assistant.
-                    Here is the document context currently loaded by the patient:
-                    ---
-                    Document Name: ${contextName}
-                    Content Data: ${contextContent}
-                    ---
-                    
-                    CRITICAL ASSIGNMENT INSTRUCTIONS:
-                    1. If the user's question relates directly to information inside the uploaded documentation context data provided above, answer the question accurately and provide direct text references or quotes as verification references.
-                    2. If the user's question is general, unrelated, or falls outside the scope of the provided document content data, you MUST provide a helpful general response but explicitly add a visible notice, note, or disclaimer at the bottom stating: "NOTE: I am an AI assistant. This specific inquiry is outside the scope of your uploaded document. Please consult your document context or a professional healthcare provider for verified clinical decisions."
-                    3. Keep your output clear and cleanly formatted using bullet points where appropriate. Always remain helpful, empathetic, and professional.
-                `;
-
-                const promptPayload = `${systemInstructions}\n\nUser Question: ${query}`;
-                const result = await aiModelInstance.generateContent(promptPayload);
-                const responseText = result.response.text();
-
-                updateChatBubble(loadingBubbleId, responseText);
-
-            } catch (error) {
-                console.error(error);
-                updateChatBubble(loadingBubbleId, `<span class="text-red-400">Error processing request via Gemini Engine API. Please ensure your API key is valid and has permissions to access the gemini-2.5-flash model.</span>`);
-            }
-        }
-
-        function appendChatBubble(text, sender, isLoading = false) {
-            const output = document.getElementById('agentOutput');
-            const bubbleId = 'bubble_' + Date.now();
-            
-            const messageWrapper = document.createElement('div');
-            messageWrapper.className = `flex flex-col ${sender === 'user' ? 'items-end' : 'items-start'} space-y-1`;
-            messageWrapper.id = bubbleId;
-
-            const nameLabel = document.createElement('span');
-            nameLabel.className = "text-[10px] text-slate-500 font-mono px-1";
-            nameLabel.innerText = sender === 'user' ? 'You' : 'Agentic Copilot';
-
-            const bubble = document.createElement('div');
-            if(sender === 'user') {
-                bubble.className = "bg-slate-800 border border-slate-700 text-slate-200 text-xs px-4 py-3 rounded-2xl max-w-[85%]";
-                bubble.innerText = text;
-            } else {
-                bubble.className = "bg-slate-900/90 border border-slate-800 text-slate-300 text-xs px-4 py-3 rounded-2xl max-w-[90%] whitespace-pre-wrap leading-relaxed";
-                if(isLoading) {
-                    bubble.innerHTML = `<div class="flex items-center gap-2 text-slate-400"><i data-lucide="loader" class="w-3.5 h-3.5 animate-spin"></i> Reasoning via Gemini vectors...</div>`;
-                } else {
-                    bubble.innerText = text;
-                }
-            }
-
-            messageWrapper.appendChild(nameLabel);
-            messageWrapper.appendChild(bubble);
-            output.appendChild(messageWrapper);
-            
-            lucide.createIcons();
-            output.scrollTop = output.scrollHeight;
-            return bubbleId;
-        }
-
-        function updateChatBubble(id, htmlContent) {
-            const element = document.getElementById(id);
-            if(element) {
-                const bubble = element.querySelector('div:last-child');
-                bubble.innerHTML = htmlContent.replace(/\*\*(.*?)\*\"/g, '<strong>$1</strong>');
-                const output = document.getElementById('agentOutput');
-                output.scrollTop = output.scrollHeight;
-            }
-        }
-    </script>
-</body>
-</html>
+                let partsPayload = [];
+                let textContextStr = "No text document currently attached.";
