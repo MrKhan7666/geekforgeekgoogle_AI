@@ -115,14 +115,12 @@
     <script type="module">
         import { GoogleGenerativeAI } from "https://esm.run/@google/generative-ai";
 
-        // Internal Engine Framework States
         let uploadedDocs = {};
         let isConnected = false;
         let apiKey = "";
         let selectedDocId = null;
         let aiModelInstance = null;
 
-        // Make functions globally available for inline HTML onclick attributes
         window.connectAPI = connectAPI;
         window.injectMock = injectMock;
         window.handleFileUpload = handleFileUpload;
@@ -154,7 +152,7 @@
                     
                     enableChatInterface();
                     clearChatCanvas();
-                    appendSystemMessage("System Active: Multimodal Handshake Complete. Ready to process records & PDF contexts.");
+                    appendSystemMessage("System Active: Multimodal engine ready. Upload a document to trigger instant analysis.");
                 } catch (err) {
                     console.error("Initialization error:", err);
                     alert("Error initializing Gemini client: " + err.message);
@@ -204,17 +202,20 @@
             const file = event.target.files[0];
             if (!file) return;
             
+            if (!isConnected) {
+                alert("Please add and connect your Gemini API Key first before uploading files.");
+                return;
+            }
+
             const reader = new FileReader();
             const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith('.pdf');
             
             reader.onload = function(e) {
                 let type = "Medical Report";
                 if(file.name.toLowerCase().includes('rx') || file.name.toLowerCase().includes('presc')) type = "Prescription";
-                if(file.name.toLowerCase().includes('receipt') || file.name.toLowerCase().includes('bill')) type = "Receipt";
                 if(isPdf) type = "PDF Report";
                 
                 if (isPdf) {
-                    // Extract clean raw base64 string excluding data URL headers
                     const base64Data = e.target.result.split(',')[1];
                     addDocument(file.name, type, base64Data, true, "application/pdf");
                 } else {
@@ -223,7 +224,7 @@
             };
 
             if (isPdf) {
-                reader.readAsDataURL(file); // Reads file to base64 encoding stream
+                reader.readAsDataURL(file);
             } else {
                 reader.readAsText(file);
             }
@@ -257,10 +258,12 @@
             container.appendChild(docElement);
             lucide.createIcons();
             
-            runAgentEngine(id);
+            // Connect and trigger initial automated scanning
+            runAgentEngine(id, false);
+            triggerAutoAnalysis(id);
         }
 
-        function runAgentEngine(id) {
+        function runAgentEngine(id, logToSystem = true) {
             selectedDocId = id;
             
             Object.keys(uploadedDocs).forEach(docId => {
@@ -275,7 +278,40 @@
             });
 
             document.getElementById('chatEngineTitle').innerText = `Analysis & Chat: ${uploadedDocs[id].name}`;
-            appendSystemMessage(`Target reference contexts switched to: ${uploadedDocs[id].name}`);
+            if (logToSystem) {
+                appendSystemMessage(`Context active: switched to ${uploadedDocs[id].name}`);
+            }
+        }
+
+        async function triggerAutoAnalysis(id) {
+            const doc = uploadedDocs[id];
+            appendSystemMessage(`Initializing auto-read engine on: ${doc.name}...`);
+            const loadingBubbleId = appendChatBubble("", 'agent', true);
+            
+            try {
+                let partsPayload = [];
+                if(doc.isBinary) {
+                    partsPayload.push({
+                        inlineData: {
+                            data: doc.content,
+                            mimeType: doc.mimeType
+                        }
+                    });
+                    partsPayload.push({
+                        text: "Analyze this attached health document immediately. Identify and output: 1) Executive Summary, 2) Key Factors/Clinical Values Found, and 3) An explicit list detailing any URGENT ATTENTION areas, extreme clinical thresholds, or concerns requiring provider follow-up. Format your response cleanly using structured markdown."
+                    });
+                } else {
+                    partsPayload.push({
+                        text: `Analyze this medical record context immediately:\n\nDocument Name: ${doc.name}\nContent:\n${doc.content}\n\nIdentify and output: 1) Executive Summary, 2) Key Factors/Clinical Values Found, and 3) An explicit list detailing any URGENT ATTENTION areas, extreme clinical thresholds, or concerns requiring provider follow-up. Format your response cleanly using structured markdown.`
+                    });
+                }
+                
+                const result = await aiModelInstance.generateContent(partsPayload);
+                updateChatBubble(loadingBubbleId, result.response.text());
+            } catch (error) {
+                console.error(error);
+                updateChatBubble(loadingBubbleId, `<span class="text-red-400">Auto-read failed: ${error.message}</span>`);
+            }
         }
 
         async function handleChatSubmit(e) {
@@ -284,11 +320,6 @@
             const query = inputEl.value.trim();
             if(!query) return;
 
-            if(!isConnected || !aiModelInstance) {
-                alert("Please add an API key and connect before chatting.");
-                return;
-            }
-
             appendChatBubble(query, 'user');
             inputEl.value = '';
 
@@ -296,4 +327,50 @@
 
             try {
                 let partsPayload = [];
-                let textContextStr = "No text document currently attached.";
+
+                if(selectedDocId && uploadedDocs[selectedDocId]) {
+                    const doc = uploadedDocs[selectedDocId];
+                    if(doc.isBinary) {
+                        partsPayload.push({
+                            inlineData: {
+                                data: doc.content,
+                                mimeType: doc.mimeType
+                            }
+                        });
+                        partsPayload.push({ text: `Context: You are analyzing the attached active PDF document titled "${doc.name}".` });
+                    } else {
+                        partsPayload.push({ text: `Document Context ("${doc.name}"):\n${doc.content}` });
+                    }
+                }
+
+                partsPayload.push({
+                    text: `System Directive: You are an Agentic Healthcare Notebook AI assistant. Answer the following follow-up user query or clarification doubt regarding the active medical document accurately. Use structured markdown formatting.\n\nUser Doubt: ${query}`
+                });
+
+                const result = await aiModelInstance.generateContent(partsPayload);
+                updateChatBubble(loadingBubbleId, result.response.text());
+
+            } catch (error) {
+                console.error(error);
+                updateChatBubble(loadingBubbleId, `<span class="text-red-400">Error processing clarification request: ${error.message}</span>`);
+            }
+        }
+
+        function appendChatBubble(text, sender, isLoading = false) {
+            const output = document.getElementById('agentOutput');
+            const bubbleId = 'bubble_' + Date.now();
+            
+            const messageWrapper = document.createElement('div');
+            messageWrapper.className = `flex flex-col ${sender === 'user' ? 'items-end' : 'items-start'} space-y-1`;
+            messageWrapper.id = bubbleId;
+
+            const nameLabel = document.createElement('span');
+            nameLabel.className = "text-[10px] text-slate-500 font-mono px-1";
+            nameLabel.innerText = sender === 'user' ? 'You' : 'Agentic Copilot';
+
+            const bubble = document.createElement('div');
+            if(sender === 'user') {
+                bubble.className = "bg-slate-800 border border-slate-700 text-slate-200 text-xs px-4 py-3 rounded-2xl max-w-[85%]";
+                bubble.innerText = text;
+            } else {
+                bubble.className = "bg-slate-900/90 border border-slate-800 text-slate-300 text-xs
